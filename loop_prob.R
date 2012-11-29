@@ -3,7 +3,7 @@ setwd("~/Documents/Research/Crim/BART") #home
 
 load("~/Criminology_Research/BART/working2.rdata")
 source("aux_functions2.R")
-source("bart_crim_fns.R")
+source("bart_prob_fns.R")
 
 ##Check for NAs
 temp=apply(work2,2,is.na)
@@ -14,10 +14,17 @@ work4=work3[,-c(1,2,4,30)] ##get rid of some columns
 
 hashNames=c("bartTrain","bartTest","rfTrain","rfTest")
 ##currently specific to our data set
-##should take work3
+##should take work3h
 
 
+out30=bartVsRf_LoopProbs(data=work4,nsim=30,train_size=1200,test_size=1000,loss_cut=1/6,cost_ratio=5,nskip=500,ndpost=1000)
+hashnames=c("train_naive","test_naive","train_bis","test_bis","rf_train","rf_test")
+results=getResultMatrix(calcList=out30,hashnames)
+plotRB(data=results,"train_bis","test_bis","impliedCost",pch=16)
+results
 
+
+out[[1]][["rf_test"]]
 
 work=work4;i=1
 train_size=1000
@@ -25,7 +32,7 @@ test_size=900
 p.fail=.48;p.nofail=1-p.fail
   
 
-train=work[1:1500,]
+train=work[1:10000,]
 test=work[1501:2500,]
 resp=train[,1]
 testclass=test[,1]
@@ -38,7 +45,7 @@ table(rtest)
 
 dim(train)
 ##Train and get confusion table
-bart.mod=bart(x.train=train[,-1],y.train=rtrain,x.test=test[,-1],ntree=200,nskip=200,ndpost=1000)
+bart.mod=bart(x.train=train[,-1],y.train=rtrain,ntree=200,nskip=200,ndpost=1000)
 plot(bart.mod)
 probs=pnorm(bart.mod$yhat.train)
 mean.probs=apply(probs,2,mean)

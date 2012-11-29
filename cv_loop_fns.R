@@ -1,61 +1,80 @@
 ##BART CRIM FUNCTIONS
 
-bartVsRf_LoopProbs=function(data,nsim,train_size,test_size,loss_cut,cost_ratio,...){
+
+gen_data = function(data,train_size, cv_size,test_size, nsim){
+  out = list() ##will return row indices
+  out[["train"]] = matrix(nrow = train_size,ncol = nsim)
+  out[["cv"]] = matrix(nrow = cv_size,ncol = nsim)
+  out[["test"]] = matrix(nrow = test_size,ncol = nsim)
+  for(i in 1:nsim){
+    num_rows = sample(1:nrow(data),(train_size + test_size + cv_size),replace=F)
+    out[["train"]][,i] = num_rows[1 : train_size]
+    out[["cv"]][,i] = num_rows[(train_size + 1) : (cv_size + train_size)]
+    out[["test"]][,i] = num_rows[(train_size + cv_size+1) : length(num_rows)]
+  }
+  out
+}
+
+
+bartVsRf_CVProbsLoop = function(data,idx_list,seed_list,nsim,train_size,cv_size,test_size,cost_ratio,...){
   require(BayesTree) ##setup
   require(randomForest) ##setup
   require(modeest)
-  start=Sys.time()
-  work=data
-  storage=list()
+  start = Sys.time()
+  work = data
+  storage = list()
   for(i in 1:nsim){
     storage[[i]]=list()
-    num.rows=sample(x=1:nrow(work),(train_size+test_size),replace=F) ##draw rows
-    
-    train.rows=num.rows[1:train_size] ##size of training
-    test.rows=num.rows[(train_size+1):length(num.rows)] #get disjoint set
+    #get rows
+    train.rows=idx_list[["train"]][,i]
+    cv.rows = idx_list[["cv"]][,i]
+    test.rows=idx_list[["test"]][,i]
     #Set test/train split-disjoint  
-    samp=work[train.rows,] #sample data 
-    test=work[test.rows,] #test data
+    train = work[train.rows,] #sample data
+    train[1,]=work[1,] ##include him for stratify to not get screwed up. 
+    cv = work[cv.rows, ] ##CV data
+    test = work[test.rows,] #test data
+    print(dim(cv))
     print(dim(test))
 
     ##Train/test BART and get confusion table
-    resp=ifelse(samp[,1]=="fail",1,0)
-    bart.mod=bart(x.train=samp[,-1],y.train=resp,x.test=test[,-1],...) ##get bart model
+    train.resp = ifelse(train[,1]=="fail",1,0)
+    
+    
+    set.seed(seed_list[i]) ##set first run seed 
+    print(seed_list[i])
+    bart.mod = bart(x.train=train[,-1],y.train=train.resp,x.test=cv[,-1],...) ##get bart model
     #Training
-    probs=pnorm(bart.mod$yhat.train) ##get probs on training set 
-    test.probs=pnorm(bart.mod$yhat.test) #get test probs
+    probs = pnorm(bart.mod$yhat.train) ##get probs on training set 
+    cv.probs = pnorm(bart.mod$yhat.test) #get test probs
     #mean.probs=apply(probs,2,mean)
     #mean.probs.test=apply(probs,2,mean)
-    probs.list=apply(probs,2,mlv,method="parzen") ##density mode
-    mlv.probs=sapply(1:nrow(samp), function(s) probs.list[[s]]$M)
-    probs.test.list=apply(test.probs,2,mlv,method="parzen") #density mode
-    mlv.probs.test=sapply(1:nrow(test), function(s) probs.test.list[[s]]$M)
-    ##A priori cut off 
-    class=ifelse(mlv.probs>=loss_cut,"Fail","No Fail") ##classify based on what you input
-    print("Train Table A Priori Cut") 
-    trainTab=conf_table_stored_print(samp[,1],class) ##create table
-    impliedCost=as.numeric(trainTab[[4]][2]) #useless
-    storage[[i]][["train_naive"]]=trainTab # save it
-    print(impliedCost)
+    #probs.list = apply(probs,2,mlv,method="parzen") ##density mode
+    #mlv.probs.train = sapply(1:nrow(train), function(s) probs.list[[s]]$M)
+    probs.cv.list = apply(cv.probs,2,mlv,method="parzen") #density mode
+    mlv.probs.cv = sapply(1:nrow(cv), function(s) probs.cv.list[[s]]$M)
     
-    #Test Naive
-    test.class=ifelse(mlv.probs.test>=loss_cut,"Fail","No Fail") ##classify test naively
-    print("Test Table A Priori Cut") 
-    testTab=conf_table_stored_print(test[,1],test.class) ##create table
-    storage[[i]][["test_naive"]]=testTab ##store it
+    ##Bisection based empirical cut off 
+    bis_cut = bisect_loss(response = cv[,1], probs = mlv.probs.cv, cost_ratio = 5)
 
-    ##Bisection based empirical cut off -TODO
-    bis_cut=bisect_loss(samp=samp,probs=mlv.probs,cost_ratio=cost_ratio) ##get bisection value based off training
     print(bis_cut)
-    class=ifelse(mlv.probs>=bis_cut,"Fail","No Fail")## change
+    cv.class = ifelse(mlv.probs.cv >= bis_cut,"Fail","No Fail")## check against train
     print("Train Table- Empirical Cutoff")
-    trainTab=conf_table_stored_print(samp[,1],class)
-    impliedCost=as.numeric(trainTab[[4]][2])
-    storage[[i]][["train_bis"]]=trainTab
+    cvTab = conf_table_stored_print(cv[,1],cv.class)
+    impliedCost = as.numeric(cvTab[[4]][2])
+    storage[[i]][["cv_bis"]] = cvTab
     print(impliedCost)
     
     #Test for bisect
-    test.class=ifelse(mlv.probs.test>=bis_cut,"Fail","No Fail")
+    set.seed(seed_list[i]) ##set first run seed 
+    print(seed_list[i])
+    bart.mod = bart(x.train=train[,-1],y.train=train.resp,x.test=test[,-1],...) ##get bart model
+    test.probs = pnorm(bart.mod$yhat.test) #get test probs
+    #mean.probs=apply(probs,2,mean)
+    #mean.probs.test=apply(probs,2,mean)
+    probs.test.list = apply(test.probs,2,mlv,method="parzen") #density mode
+    mlv.probs.test = sapply(1:nrow(test), function(s) probs.test.list[[s]]$M)
+    test.class = ifelse(mlv.probs.test >= bis_cut,"Fail","No Fail")## check against train
     print("Test Table Empirical Cut")
     testTab=conf_table_stored_print(test[,1],test.class)
     storage[[i]][["test_bis"]]=testTab
@@ -63,12 +82,12 @@ bartVsRf_LoopProbs=function(data,nsim,train_size,test_size,loss_cut,cost_ratio,.
   
     ##RF Work
     ##get 2/3 fail class for RFs
-    rf.resp=samp[,1]
+    rf.resp=train[,1]
     rf_fail=ceiling(2/3*length(which(rf.resp=="fail"))) ##set 2/3 of fails to be sampled
     rf_nofail=ceiling(rf_fail*1.25) ##set 1.25 no fail to start and adjust
     rfCost=-1
     while(abs(rfCost-cost_ratio)>.25){ #check if cost within .25 of 5
-      rf=randomForest(x=samp[,-1],y=rf.resp,ntree=500,sampsize=c(rf_fail,rf_nofail))
+      rf=randomForest(x=train[,-1],y=rf.resp,ntree=500,sampsize=c(rf_fail,rf_nofail))
       rfTrainTab=conf_table_stored(rf.resp,rf$predicted)
       rfCost=as.numeric(rfTrainTab[[4]][2])
       rf_nofail=rf_nofail-1
@@ -98,7 +117,7 @@ bisect_loss=function(response,probs,cost_ratio,xl=.05,xr=.2,ntry=200,tol=.2){
     if(impliedCost==cost_ratio) {
       print(impliedCost)
       return(xmid)
-      }
+    }
     leftclass=ifelse(probs>=xl,"Fail","No Fail")
     trainTab=conf_table_stored(response,leftclass)
     leftCost=as.numeric(trainTab[[4]][2])
@@ -120,7 +139,7 @@ getResultMatrix=function(calcList,hashNames){
   for(j in hashNames){
     mat=matrix(nrow=length(calcList),ncol=6)
     for(i in 1:length(calcList)){            
-     
+      
       mat[i,1]=calcList[[i]][[j]][[1]][[2]][[1]] ##modelErrorFail
       mat[i,2]=calcList[[i]][[j]][[1]][[2]][[2]]  ##model error NoFail
       
